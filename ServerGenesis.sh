@@ -34,7 +34,7 @@ then
         sudo systemctl enable --now docker.service
     elif [ -d /etc/portage ]
     then
-        sudo emerge -qv docker docker-buildx
+        sudo emerge -qv app-containers/docker
         # Gentoo uses two init systems, accommodating for the systemd users
         case $initcheck in
             *openrc*)
@@ -65,18 +65,14 @@ then
     echo "You are running macOS!"
     echo "Homebrew is not installed, installing Mac-specific dependency..."
     sleep 2
-    xcode-select --install
-    NONINTERACTIVE=1 sudo /bin/bash -c \
-    "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    echo "Installing Docker for Mac..."
+    curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh
     brew install docker --force
     open -a /Applications/Docker.app
     sleep 2
 fi
 
 # Source: https://stackoverflow.com/questions/18431285/check-if-a-user-is-in-a-group-in-bash, ChatGPT
-if [ "$(id -nG "$(whoami)" | tr ' ' '\n' | grep -w 'docker')" != "docker" ] \
-&& [ ! -d /Applications ]
+if [ "$(id -nG "$(whoami)" | tr ' ' '\n' | grep -w 'docker')" != "docker" ]
 then
     echo "$(whoami) is not part of group 'docker', adding user to necessary group..."
     sudo usermod -aG docker "$USER"
