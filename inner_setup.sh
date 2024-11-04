@@ -47,7 +47,7 @@ echo "Installing chosen dependencies..."
 
 case $isSSHAccess in
     y|Y)
-        apt-get -y install openssh-server
+        apt-get -y install openssh
         ;;
     n|N)
         ;;
