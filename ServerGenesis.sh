@@ -4,7 +4,7 @@
 # Pre-Alpha Version 0.5 -- EXPECT BUGS AND ISSUES!!!
 
 echo "SERVER GENESIS -- Fire up a platform-agnostic server in minutes!"
-echo "Pre-Alpha Version 0.5 -- EXPECT BUGS AND ISSUES!!!"
+echo "Pre-Alpha Version 0.55 -- EXPECT BUGS AND ISSUES!!!"
 sleep 2
 
 initcheck=$(ps -p 1 | tail -1 | cut -f17 -d " ")
@@ -89,7 +89,9 @@ echo
 echo "1.) Would you like to grant SSH access to the server? (Y/N) ";\
 read -r isSSHAccess # https://ryanstutorials.net/bash-scripting-tutorial/bash-input.php
 echo
-
+echo "Which port would you like SSH to listen on?"
+read -r sshPortNumber
+echo
 if [[ "$isSSHAccess" =~ [yY] ]]
 then
     echo "2.) Would you like to install a file server? (Y/N) ";\
@@ -105,6 +107,9 @@ then
     echo
     echo "Choose your web server: [A]pache/[N]ginx/[O]penResty ";\
     read -r webServerType
+    echo
+    echo "Which port would you like the web server to listen on?"
+    read -r webserverPortNumber
     echo
     echo "Would you like to import an existing website? (Y/N) ";\
     read -r restoreWebsiteState
@@ -155,13 +160,13 @@ then
     fi
 fi
 echo
-echo "5.) And finally: Would you like to install an e-mail server? (Y/N) "
+echo "5.) And finally: would you like to install an e-mail server? (Y/N) "
 read -r isMailServer
 echo
 
 sudo docker build -t dockerian .
 # Inspired by a ChatGPT response
-sudo docker run -d --restart always --name dockerian -it dockerian /bin/bash
+sudo docker run -d --restart always --name dockerian -p "$sshPortNumber":22 -p "$webserverPortNumber":80 -it dockerian /bin/bash
 
 # Installing chosen dependencies
 echo "Installing chosen dependencies..."
@@ -289,6 +294,7 @@ case $isDbServer in
                 sudo docker exec -it dockerian bash -c "apt-get update && apt-get -y install mongodb-enterprise"
                 case $restoreDbState in
                 y|Y)
+                    sudo docker exec -it dockerian cp -r "$databaseFiles" /
                     sudo docker exec -it dockerian mongorestore --drop --dir "$databaseFiles" # Help by ChatGPT
                     ;;
                 n|N|"")
@@ -305,6 +311,7 @@ case $isDbServer in
                 mariadb-server mariadb-client mariadb-backup"
                 case $restoreDbState in
                 y|Y)
+                    sudo docker exec -it dockerian cp -r "$databaseFiles" /
                     sudo docker exec -it dockerian bash -c "mysql -u root < $databaseFiles" # Help by ChatGPT
                     ;;
                 n|N|"")
@@ -323,6 +330,9 @@ case $isDbServer in
                 case $restoreDbState in
                 y|Y)
                     # Source: https://stackoverflow.com/questions/6463614/how-to-import-an-oracle-database-from-dmp-file-and-log-file, ChatGPT
+                    sudo docker exec -it dockerian cp -r "$databaseFiles" /
+                    sudo docker exec -it dockerian cp -r "$logfile_path" /
+                    sudo docker exec -it dockerian cp -r "$datapump_dir" /
                     sudo docker exec -it dockerian bash -c "sqlplus -s ${username}/${password} <<EOF
                     WHENEVER SQLERROR EXIT SQL.SQLCODE
                     BEGIN
@@ -341,7 +351,7 @@ EOF"
                     fi
 
                     impdp "${username}"/"${password}" \
-                    directory=DATA_PUMP_DIR \
+                    directory="$datapump_dir" \
                     dumpfile="$(basename "$databaseFiles")" \
                     logfile="$(basename "$logfile_path")" \
                     full=y
@@ -362,6 +372,7 @@ EOF"
                 ;;
             p|P)
                 sudo docker exec -it dockerian apt-get -y install postgresql
+                sudo docker exec -it dockerian cp -r "$databaseFiles" /
                 sudo docker exec -it dockerian bash -c "su - postgres -c 'psql < $databaseFiles'" # Help by ChatGPT
                 ;;
             "")
