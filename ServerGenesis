@@ -1,0 +1,673 @@
+#! /bin/bash
+
+# ServerGenesis - Spin up containerised company servers in under 5 minutes!
+# 0.7 Beta -- EXPECT BUGS AND ISSUES!!!
+
+# This is the regexp cheatsheet I used to group multiple if-else validations
+# together using regular expressions: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_expressions/Cheatsheet
+
+# Thank God, HashMaps exist in Bash! Source: https://xeiaso.net/notes/2024/bash-hashmap/
+declare -A -r webserver_file_paths=(
+    ["a"]="/var/www/html"
+    ["A"]="/var/www/html"
+    ["apache"]="/var/www/html"
+    ["Apache"]="/var/www/html"
+    ["n"]="/usr/share/nginx/html"
+    ["N"]="/usr/share/nginx/html"
+    ["nginx"]="/usr/share/nginx/html"
+    ["Nginx"]="/usr/share/nginx/html"
+    ["o"]="/usr/local/openresty/nginx/html"
+    ["O"]="/usr/local/openresty/nginx/html"
+    ["openresty"]="/usr/local/openresty/nginx/html"
+    ["OpenResty"]="/usr/local/openresty/nginx/html"
+)
+
+initcheck=$(ps -p 1 | awk '{print $4}' | tail -1)
+# DeepSeek R1 recommended me to give default values to crucial variables like these
+is_ssh_access=false
+ssh_port_number=""
+is_file_server=false
+sftp_username=""
+is_web_server=false
+web_server_port_number=""
+web_server_type=""
+website_files=""
+is_db_server=false
+db_type=""
+db_backup_file=""
+username=""
+dbname=""
+is_email_server=false
+email_server_io_check=""
+
+# If the docker package is not present, install it on the popular distros
+# (Debian/Ubuntu, Fedora, RHEL, Arch Linux, Gentoo, Alpine)
+if [ ! -e /usr/bin/docker ]
+then
+    echo "Docker is not installed! Installing dependency of shell script..."
+    sleep 2
+    if [ -e /etc/debian_version ]
+    then
+        sudo apt-get -y install docker.io
+    elif [ -e /etc/fedora-release ]
+    then
+        sudo dnf -y install dnf-plugins-core
+        sudo dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
+        sudo dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    elif [ -e /etc/redhat-release ]
+    then
+        sudo dnf -y install dnf-plugins-core
+        sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+        sudo dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    elif [ -d /etc/pacman.d ]
+    then
+        sudo pacman -Syu --noconfirm docker docker-buildx
+        sudo systemctl enable --now docker.service
+    elif [ -d /etc/portage ]
+    then
+        sudo emerge -qv docker docker-buildx
+        # Gentoo uses two init systems, accommodating for the systemd users
+        case $initcheck in
+            *openrc*)
+                sudo rc-update add docker default
+                sudo rc-service docker start
+                ;;
+            systemd)
+                sudo systemctl enable --now docker.service
+                ;;
+            *)
+                echo "Unsupported Gentoo configuration!"
+                exit 1
+                ;;
+        esac
+    elif [ -d /etc/apk ]
+    then
+        sudo apk add docker
+        sudo rc-update add docker default
+        sudo service docker start
+    else
+        echo "Unfortunately, this script doesn't support your distribution."
+        exit 1 # ChatGPT segítsége
+    fi
+fi
+# Mac install
+if [ -d /Applications ] && [ ! -e /Applications/Docker.app ]
+then
+    echo "You are running macOS!"
+    echo "Homebrew is not installed, installing Mac-specific dependency..."
+    sleep 2
+    xcode-select --install
+    NONINTERACTIVE=1 sudo /bin/bash -c \
+    "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    echo "Installing Docker for Mac..."
+    brew install docker --force
+    open -a /Applications/Docker.app
+    sleep 2
+fi
+
+# Source: https://stackoverflow.com/questions/18431285/check-if-a-user-is-in-a-group-in-bash, ChatGPT
+if [ "$(id -nG "$USER" | tr ' ' '\n' | grep -w 'docker')" != "docker" ] \
+&& [ ! -d /Applications ]
+then
+    echo "$USER is not part of group 'docker', adding user to necessary group..."
+    sudo usermod -aG docker "$USER"
+fi
+
+ssh_setup()
+{
+    docker exec -it dockerian apt-get -y install openssh-server
+    docker exec -it dockerian sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+    docker exec -it dockerian sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+    # Debian in a container doesn't use systemd, so it manages processes
+    # the exact same way as Devuan: with the classic sysvinit init system.
+    docker exec -it dockerian update-rc.d ssh defaults
+    docker exec -it dockerian service ssh start
+}
+
+# Arch Wiki: https://wiki.archlinux.org/title/SCP_and_SFTP
+file_server_setup()
+{
+    local username=$1
+    echo "Please type in your future root password!"
+    docker exec -it dockerian passwd
+    docker exec -it dockerian groupadd sftpuser
+    docker exec -it dockerian useradd -mG sftpuser -s /sbin/nologin "$username"
+    echo "Please type in the password of the first SFTP user!"
+    docker exec -it dockerian passwd "$username"
+    docker exec -it dockerian bash -c "echo -e 'Match Group sftpuser\n
+        ForceCommand internal-sftp\n
+        ChrootDirectory ~\n
+        PasswordAuthentication yes\n
+        PermitTunnel no\n
+        AllowAgentForwarding no\n
+        AllowTcpForwarding no\n
+        X11Forwarding no' >> /etc/ssh/sshd_config"
+    docker exec -it dockerian chmod 755 /home/"$username"
+    docker exec -it dockerian chown root:root /home/"$username"
+    docker exec -it dockerian mkdir -p /home/"$username"/sftp
+    docker exec -it dockerian chmod 744 /home/"$username"/sftp
+    docker exec -it dockerian chown "$username":sftpuser /home/"$username"/sftp
+    docker exec -it dockerian service ssh restart
+}
+
+db_dump_copy()
+{
+    if [[ -d "$db_backup_file" || -e "$db_backup_file" ]]
+    then
+        docker cp "$db_backup_file" dockerian:/
+    fi
+}
+
+web_server_setup()
+{
+    local server_type=$1
+    local local_web_files=$2
+    local dirname=
+    # I did not even know this command exists, but it's so damn useful! Source: https://stackoverflow.com/a/3294102
+    dirname=$(basename "$local_web_files")
+    case $server_type in
+        a|A|apache|Apache)
+            docker exec -it dockerian apt-get -y install apache2
+            ;;
+        n|N|nginx|Nginx)
+            docker exec -it dockerian apt-get -y install nginx
+            ;;
+        o|O|openresty|OpenResty)
+            docker exec -it dockerian apt-get -y install \
+            --no-install-recommends wget gnupg ca-certificates
+            docker exec -it dockerian bash -c "wget -O - \
+            https://openresty.org/package/pubkey.gpg | gpg --dearmor -o \
+            /etc/apt/trusted.gpg.d/openresty.gpg"
+            docker exec -it dockerian bash -c "echo 'deb \
+            https://openresty.org/package/debian bookworm openresty' \
+            | tee /etc/apt/sources.list.d/openresty.list"
+            docker exec -it dockerian bash -c "apt-get update && apt-get -y install openresty"
+            ;;
+        "")
+            ;;
+        *)
+            echo "ERROR: Invalid input."
+            exit 1
+            ;;
+    esac
+}
+
+database_setup()
+{
+    local db_type=$1
+    case $db_type in
+        mo|Mo|MO|mongodb|MongoDB)
+            docker exec -it dockerian apt-get -y install gnupg curl
+            docker exec -it dockerian bash -c "curl -fsSL \
+            https://pgp.mongodb.com/server-8.0.asc | gpg -o \
+            /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor"
+            docker exec -it dockerian bash -c "echo 'deb \
+            [ signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] \
+            https://repo.mongodb.com/apt/debian \
+            bookworm/mongodb-enterprise/8.0 main' | \
+            tee /etc/apt/sources.list.d/mongodb-enterprise.list"
+            docker exec -it dockerian bash -c "apt-get update && apt-get -y install mongodb-enterprise"
+            ;;
+        my|My|MY|mysql|MySQL)
+            docker exec -it dockerian curl -LsS https://r.mariadb.com/downloads/mariadb_repo_setup | bash
+            docker exec -it dockerian bash -c "apt-get update && apt-get -y install \
+            mariadb-server mariadb-client mariadb-backup"
+            ;;
+        o|O|oracle|Oracle)
+            docker exec -it dockerian apt-get -y install wget alien libaio1 unixodbc
+            docker exec -it dockerian wget https://download.oracle.com/otn/linux/oracle21c/oracle-database-ee-21c-1.0-1.ol8.x86_64.rpm
+            docker exec -it dockerian alien -cdi oracle-database-ee-*.rpm
+            docker exec -it dockerian dpkg -i oracle-database-ee-*.deb
+            ;;
+        p|P|postgres|Postgres|postgresql|PostgreSQL)
+            docker exec -it dockerian apt-get -y install postgresql
+            ;;
+        "")
+            ;;
+        *)
+            echo "ERROR: Invalid input."
+            exit 1
+            ;;
+    esac
+}
+
+email_server_setup()
+{
+    if [[ $is_email_server || $email_server_io_check =~ [yY] ]]
+    then
+        docker exec -it dockerian apt-get -y install postfix
+        docker exec -it dockerian postconf -e smtpd_tls_security_level=may
+        docker exec -it dockerian postconf -e smtpd_use_tls
+        docker exec -it dockerian postconf -e smtpd_enforce_tls
+    fi
+}
+
+container_builder()
+{
+    local ssh_port=$1
+    local web_port=$2
+    docker build -t dockerian .
+    if [[ -z $ssh_port && -z $web_port ]]
+    then
+        docker run -d --restart always --name dockerian -it dockerian /bin/bash
+    elif [ -z "$ssh_port" ]
+    then
+        # Inspired by a ChatGPT response
+        docker run -d --restart always --name dockerian -p "$web_port":80 -it dockerian /bin/bash
+    elif [ -z "$web_port" ]
+    then
+        docker run -d --restart always --name dockerian -p "$ssh_port":22 -it dockerian /bin/bash
+    else
+        docker run -d --restart always --name dockerian -p "$ssh_port":22 -p "$web_port":80 -it dockerian /bin/bash
+    fi
+}
+
+create_container()
+{
+    container_builder "$ssh_port_number" "$web_server_port_number"
+}
+
+value_validation()
+{
+    if [[ -z "$2" || "$2" == -* ]]
+    then
+        echo "ERROR: Inputting a value is required after $1!" >&2
+        exit 1
+    fi
+
+    if [[ $db_type =~ /(o|O|oracle|Oracle)/ && -z $3 || $3 == -* && -z $4 || $4 == -* ]]
+    then
+        cat <<EOF ERROR: You need to specify the username and the name of the database
+        while restoring an Oracle database!
+EOF
+    fi
+}
+
+print_help()
+{
+    cat <<EOF
+SERVER GENESIS -- Spin up containerised company servers in under 5 minutes!
+
+2024-2025 TheAestheticFur (With the help of some ChatGPT and DeepSeek assistance)
+
+
+Usage: $0 [ARGS] OPTARGS ...
+Example: $0 --ssh --ssh-port 2222 --webserver --webserver-port 80 --website-files /path/to/files
+
+You can use this script without specifying arguments, too. In this case, an interactive TUI
+wizard launches, allowing you to set your server up in a user-friendly environment.
+
+Main arguments:
+  -s, --ssh                     Enable SSH support
+  -S, --ssh-port PORT           SSH port number (mandatory if -s/--ssh is used)
+
+  -w, --webserver               Use your container as a web server
+  -W, --webserver-port          Web server port number (mandatory if -w/--webserver is used)
+  -t, --webserver-type          Type of your web server (apache, nginx, openresty)
+
+  -d, --db-server               Use your container as a database server
+  -D, --db-type                 Type of your database server (mongodb, mysql, postgresql, oracle)
+  -e, --email-server            Use your container as an e-mail server
+
+  -h, --help                    Display this exact help dialogue
+
+Optional arguments:
+  --website-files PATH          Copy existing website data into container (only if -w/--webserver is used)
+  --db-backup PATH              Copy database dump into the container and restore it
+                                (only if -d/--db-server is used)
+  -f, --file-server USERNAME    Add SFTP file server support with an initial user (only if -s/--ssh is used)
+
+This script is blessed with the approval of Xenia, the Super Vixen of Linux.
+EOF
+}
+
+# Choosing the functionality of the Debian container using switches (API that the C# front-end relies upon)
+# Inspired by: https://labex.io/tutorials/shell-bash-getopt-391993#parsing-options-with-bash-getopt
+# Additional help by DeepSeek to make the argument handling more compatible with macOS
+# (BSD getopt doesn't support handling both short and long switches at the same time, unlike GNU getopt)
+
+while [[ $# -gt 0 ]]
+do
+    case "$1" in
+        -s|--ssh)
+            is_ssh_access=true
+            shift
+            ;;
+        -w|--webserver)
+            is_web_server=true
+            shift
+            ;;
+        -d|--db-server)
+            is_db_server=true
+            shift
+            ;;
+        -f|--file-server)
+            is_file_server=true
+            value_validation "$1" "$2"
+            sftp_username=$2
+            shift 2
+            ;;
+        -e|--email-server)
+            is_email_server=true
+            shift
+            ;;
+        -S|--ssh-port)
+            value_validation "$1" "$2"
+            ssh_port_number="$2"
+            # echo "Captured SSH Port: $ssh_port_number"
+            shift 2
+            ;;
+        -W|--webserver-port)
+            value_validation "$1" "$2"
+            web_server_port_number="$2"
+            # echo "Captured Web Server Port: $web_server_port_number"
+            shift 2
+            ;;
+        -t|--webserver-type)
+            value_validation "$1" "$2"
+            web_server_type="$2"
+            shift 2
+            ;;
+        -D|--db-type)
+            value_validation "$1" "$2"
+            db_type="$2"
+            shift 2
+            ;;
+        --website-files)
+            value_validation "$1" "$2"
+            website_files="$2"
+            shift 2
+            ;;
+        --db-backup)
+            value_validation "$1" "$2"
+            db_backup_file="$2"
+            shift 2
+            ;;
+        -h|--help)
+            print_help
+            exit 0
+            ;;
+        -*)
+            echo "ERROR: Invalid argument: $1" >&2
+            exit 126
+            ;;
+        *)
+            echo "ERROR: Command not found: $1" >&2
+            exit 127
+            ;;
+    esac
+done
+
+if [[ -z "$(docker ps -a | grep -E dockerian)" ]]
+then
+    create_container
+fi
+
+load_database_backup()
+{
+    local db_type="$1"
+    local backup_path="$2"
+    local user="$3"
+    local dirname="$4"
+    case "$db_type" in
+        mo|Mo|MO|mongodb|MongoDB)
+            db_dump_copy
+            docker exec -it dockerian mongorestore --drop --dir "$backup_path" # Help by ChatGPT
+            ;;
+        my|My|MY|mysql|MySQL)
+            db_dump_copy
+            docker exec -it dockerian bash -c "mysql -u root < $backup_path" # Help by ChatGPT
+            ;;
+        o|O|oracle|Oracle)
+            db_dump_copy
+            # Help by Oracle Docs:
+            # https://docs.oracle.com/en/database/oracle/oracle-database/19/sutil/datapump-import-utility.html#GUID-1DB459BF-1FA2-4CA2-BB9D-2FE59C0B99F6
+            impdp "$user"@"$dbname" DIRECTORY="$dirname" DUMPFILE=export.dmp FULL=YES NOLOGFILE=YES
+            ;;
+        p|P|postgres|postgresql|Postgres|PostgreSQL)
+            db_dump_copy
+            docker exec dockerian psql -U postgres -f "$backup_path" # Help by DeepSeek
+            ;;
+        *)
+            echo "ERROR: Invalid argument."
+            exit 1
+            ;;
+    esac
+}
+
+service_restart()
+{
+    local service_name="$1"
+    docker exec -it dockerian service "$service_name" restart
+}
+
+# This is mostly boilerplate, so I made the structure of it with DeepSeek
+check_dependencies()
+{
+    if $is_file_server && ! $is_ssh_access
+    then
+        echo "ERROR: This command can only be used alongside -s/--ssh." >&2
+        exit 1
+    fi
+
+    if $is_ssh_access && [[ -z "$ssh_port_number" ]]
+    then
+        echo "ERROR: The SSH port number is required." >&2
+        exit 1
+    fi
+
+    if $is_web_server && [[ -z "$web_port" && -z "$web_server_type" ]]
+    then
+        echo "ERROR: The port number and type of the web server is required." >&2
+        exit 1
+    fi
+
+    if [[ -n "$website_files" ]] && ! $is_web_server
+    then
+        echo "ERROR: This command can only be used alongside -w/--webserver." >&2
+        exit 1
+    fi
+
+    if [[ -n "$db_backup_file" ]] && ! $is_db_server
+    then
+        echo "ERROR: This command can only be used alongside -d/--db-server." >&2
+        exit 1
+    fi
+}
+
+main()
+{
+    check_dependencies
+
+    if [[ $is_ssh_access == true ]]
+    then
+        ssh_setup
+        if [[ $is_file_server == true ]]
+        then
+            file_server_setup "$sftp_username"
+        fi
+    fi
+
+    if [[ $is_web_server == true ]]
+    then
+        web_server_setup "$web_server_type" "$website_files"
+        if [[ -n "$website_files" ]]
+        then
+            docker cp "$website_files" dockerian:"${webserver_file_paths[$web_server_type]}"
+            service_restart "$web_server_type"
+        fi
+    fi
+
+    if [[ $is_db_server == true ]]
+    then
+        database_setup "$db_type"
+        if [[ -n "$db_backup" ]]
+        then
+            if [[ $db_type =~ /(o|O|oracle|Oracle)/ ]]
+            then
+                load_database_backup "$db_type" "$db_backup_file" "$username" "$dbname"
+            else
+                load_database_backup "$db_type" "$db_backup_file"
+            fi
+            service_restart "$db_type"
+        fi
+    fi
+
+    if [[ $is_email_server == true ]]
+    then
+        email_server_setup
+    fi
+}
+
+main
+
+if [[ -n $1 || -z $1 ]]
+then
+    # Source code for choosing functionality of the Debian container interactively
+    echo "SERVER GENESIS -- Fire up a platform-agnostic server in minutes!"
+    echo "0.7 Beta -- EXPECT BUGS AND ISSUES!!!"
+    sleep 2
+    echo
+    echo "Choose the functionality of your containerised Debian server:"
+    echo
+    echo "1.) Would you like to grant SSH access to the server? (Y/N) ";\
+    read -r ssh # https://ryanstutorials.net/bash-scripting-tutorial/bash-input.php
+    echo
+    if [[ $ssh =~ [yY] ]]
+    then
+        echo "Which port would you like SSH to listen on?"
+        ssh_port_number=$(read -r)
+        echo "2.) Would you like to install a file server? (Y/N) ";\
+        read -r file_server
+        echo "Please specify the name of the first SFTP account: "
+        sftp_username=$(read -r)
+    fi
+    echo
+
+    echo "3.) Would you like to install a web server? (Y/N) ";\
+    web_server=$(read -r)
+
+    if [[ "$web_server" =~ [yY] ]]
+    then
+        is_web_server=true
+        echo
+        echo "Choose your web server: [A]pache/[N]ginx/[O]penResty ";\
+        web_server_type=$(read -r)
+        echo
+        echo "Which port would you like the web server to listen on?"
+        web_server_port_number=$(read -r)
+        echo
+        echo "Would you like to import an existing website? (Y/N) ";\
+        restore_website_state=$(read -r)
+        if [[ $restore_website_state =~ [yY] ]]
+        then
+            echo "Please type in the path to your website's files:";\
+            website_files=$(read -r)
+        fi
+    fi
+    echo
+
+    if [[ "$web_server" =~ [yY] ]]
+    then
+        echo "4.) Would you like to install a database server? (Y/N) ";\
+        read -r isDbServer
+        if [[ "$isDbServer" =~ [yY] ]]
+        then
+            echo
+            echo "Choose your database management system (DBMS): [Mo]ngoDB/[My]SQL/[O]racle SQL (PL/SQL)/[P]ostgreSQL ";\
+            read -r db_type
+            echo
+            echo "Would you like to import an existing database? (Y/N) ";\
+            db_backup_file=$(read -r)
+            echo
+            if [[ $db_backup_file =~ [yY] ]]
+            then
+                echo "Please type in the path to your website's files:";\
+                db_type=$(read -r)
+                if [[ "$db_type" == "oracle" ]]
+                then
+                    echo
+                    echo "Enter your username: "
+                    username=$(read -r)
+                    echo
+                    echo "Enter the name of the database:"
+                    dbname=$(read -r)
+                fi
+            fi
+        fi
+    fi
+    echo
+    echo "5.) And finally: would you like to install an e-mail server? (Y/N) "
+    read -r isMailServer
+    echo
+
+
+    # Installing chosen dependencies
+    echo "Installing chosen dependencies..."
+    echo
+
+    container_builder "$ssh_port_number" "$web_server_port_number"
+
+    case $ssh in
+        y|Y) ssh_setup ;;
+        n|N) ;;
+        *)
+            echo "ERROR: Not a valid input."
+            exit 1
+            ;;
+    esac
+
+    case $file_server in
+        y|Y)
+            file_server_setup "$sftp_username"
+            ;;
+        n|N|"")
+            ;;
+        *)
+            echo "ERROR: Not a valid input."
+            exit 1
+            ;;
+    esac
+
+    case $web_server in
+        y|Y)
+            if [[ $restore_website_state =~ [yY] ]]
+            then web_server_setup "$web_server_type" "$website_files"
+            else web_server_setup "$web_server_type"
+            fi
+            ;;
+        n|N|"")
+            ;;
+        *)
+            echo "ERROR: Invalid input."
+            exit 1
+            ;;
+    esac
+
+    case $isDbServer in
+        y|Y)
+            database_setup "$db_type"
+            ;;
+        n|N|"")
+            ;;
+        *)
+            echo "ERROR: Invalid input."
+            exit 1
+            ;;
+    esac
+
+    case $isMailServer in
+        y|Y)
+           email_server_setup
+            ;;
+        n|N|"")
+            ;;
+        *)
+            echo "ERROR: Invalid input."
+            exit 1
+            ;;
+    esac
+
+    echo "Congratulations! You've successfully configured a ready-to-use (and portable) Debian server for your needs."
+    echo "Isn't it nice that I spent a lot of my time so that you'd have less headaches? :)"
+fi
