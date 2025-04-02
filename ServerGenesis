@@ -35,6 +35,7 @@ website_files=""
 is_db_server=false
 db_type=""
 db_backup_file=""
+mysql_creds=""
 username=""
 dbname=""
 is_email_server=false
@@ -150,27 +151,19 @@ file_server_setup()
     docker exec -it dockerian service ssh restart
 }
 
-db_dump_copy()
-{
-    if [[ -d "$db_backup_file" || -e "$db_backup_file" ]]
-    then
-        docker cp "$db_backup_file" dockerian:/
-    fi
-}
-
 web_server_setup()
 {
     local server_type=$1
-    local local_web_files=$2
-    local dirname=
-    # I did not even know this command exists, but it's so damn useful! Source: https://stackoverflow.com/a/3294102
-    dirname=$(basename "$local_web_files")
     case $server_type in
         a|A|apache|Apache)
-            docker exec -it dockerian apt-get -y install apache2
+            docker exec -it dockerian apt-get -y install apache2 php8.2
+            docker exec -it dockerian update-rc.d apache2 defaults
+            docker exec -it dockerian service apache2 start
             ;;
         n|N|nginx|Nginx)
             docker exec -it dockerian apt-get -y install nginx
+            docker exec -it dockerian update-rc.d nginx defaults
+            docker exec -it dockerian service nginx start
             ;;
         o|O|openresty|OpenResty)
             docker exec -it dockerian apt-get -y install \
@@ -182,6 +175,8 @@ web_server_setup()
             https://openresty.org/package/debian bookworm openresty' \
             | tee /etc/apt/sources.list.d/openresty.list"
             docker exec -it dockerian bash -c "apt-get update && apt-get -y install openresty"
+            docker exec -it dockerian update-rc.d openresty defaults
+            docker exec -it dockerian service openresty start
             ;;
         "")
             ;;
@@ -212,6 +207,13 @@ database_setup()
             docker exec -it dockerian curl -LsS https://r.mariadb.com/downloads/mariadb_repo_setup | bash
             docker exec -it dockerian bash -c "apt-get update && apt-get -y install \
             mariadb-server mariadb-client mariadb-backup"
+            if [[ $web_server_type =~ /a|A|apache|Apache/ ]]
+            then
+                docker exec -it dockerian bash -c "apt-get update && apt-get -y install php-mysql"
+                docker exec -it dockerian service apache2 restart
+            fi
+            docker exec -it dockerian update-rc.d mariadb defaults
+            docker exec -it dockerian service mariadb start
             ;;
         o|O|oracle|Oracle)
             docker exec -it dockerian apt-get -y install wget alien libaio1 unixodbc
@@ -221,6 +223,8 @@ database_setup()
             ;;
         p|P|postgres|Postgres|postgresql|PostgreSQL)
             docker exec -it dockerian apt-get -y install postgresql
+            docker exec -it dockerian update-rc.d postgresql defaults
+            docker exec -it dockerian service postgresql start
             ;;
         "")
             ;;
@@ -275,12 +279,45 @@ value_validation()
         exit 1
     fi
 
-    if [[ $db_type =~ /(o|O|oracle|Oracle)/ && -z $3 || $3 == -* && -z $4 || $4 == -* ]]
+    if [[ $db_type =~ /o|O|oracle|Oracle/ && -z $3 || $3 == -* && -z $4 || $4 == -* ]]
     then
         cat <<EOF ERROR: You need to specify the username and the name of the database
         while restoring an Oracle database!
 EOF
     fi
+}
+
+load_database_backup()
+{
+    local database_type="$1"
+    local backup_path="$2"
+    local user="$3"
+    case "$database_type" in
+        mo|Mo|MO|mongodb|MongoDB)
+            docker exec -it dockerian mongorestore --drop --dir "$backup_path" # Help by ChatGPT
+            ;;
+        my|My|MY|mysql|MySQL)
+            if [[ -n "$mysql_creds" ]]
+            then
+                docker cp "$mysql_creds" dockerian:/root/.my.cnf
+                docker exec -it dockerian chmod 600 /root/.my.cnf
+            fi
+            # Help by ChatGPT
+            docker exec -it dockerian bash -c "mysql -u root -p < $backup_path"
+            ;;
+        o|O|oracle|Oracle)
+            # Help by Oracle Docs:
+            # https://docs.oracle.com/en/database/oracle/oracle-database/19/sutil/datapump-import-utility.html#GUID-1DB459BF-1FA2-4CA2-BB9D-2FE59C0B99F6
+            impdp "$user"@"$dbname" DIRECTORY="$backup_path" DUMPFILE=export.dmp FULL=YES NOLOGFILE=YES
+            ;;
+        p|P|postgres|postgresql|Postgres|PostgreSQL)
+            docker exec dockerian psql -U postgres -f "$backup_path" # Help by DeepSeek
+            ;;
+        *)
+            echo "ERROR: Invalid argument."
+            exit 1
+            ;;
+    esac
 }
 
 print_help()
@@ -313,8 +350,12 @@ Main arguments:
 
 Optional arguments:
   --website-files PATH          Copy existing website data into container (only if -w/--webserver is used)
+  --db-name STRING              Specifies the name of the database created to restore data into
+                                (only if -d/--db-server is used with MySQL and Oracle database types)
   --db-backup PATH              Copy database dump into the container and restore it
                                 (only if -d/--db-server is used)
+  -m, --mysql-credentials PATH  Copy a MySQL configuration file into the container (only if the database type
+                                is MySQL)
   -f, --file-server USERNAME    Add SFTP file server support with an initial user (only if -s/--ssh is used)
 
 This script is blessed with the approval of Xenia, the Super Vixen of Linux.
@@ -373,6 +414,16 @@ do
             db_type="$2"
             shift 2
             ;;
+        --db-name)
+            value_validation "$1" "$2"
+            dbname="$2"
+            shift 2
+            ;;
+        -m|--mysql-credentials)
+            value_validation "$1" "$2"
+            mysql_creds="$2"
+            shift 2
+            ;;
         --website-files)
             value_validation "$1" "$2"
             website_files="$2"
@@ -398,42 +449,10 @@ do
     esac
 done
 
-if [[ -z "$(docker ps -a | grep -E dockerian)" ]]
+if ! docker ps -a | grep -Eq 'dockerian'
 then
     create_container
 fi
-
-load_database_backup()
-{
-    local db_type="$1"
-    local backup_path="$2"
-    local user="$3"
-    local dirname="$4"
-    case "$db_type" in
-        mo|Mo|MO|mongodb|MongoDB)
-            db_dump_copy
-            docker exec -it dockerian mongorestore --drop --dir "$backup_path" # Help by ChatGPT
-            ;;
-        my|My|MY|mysql|MySQL)
-            db_dump_copy
-            docker exec -it dockerian bash -c "mysql -u root < $backup_path" # Help by ChatGPT
-            ;;
-        o|O|oracle|Oracle)
-            db_dump_copy
-            # Help by Oracle Docs:
-            # https://docs.oracle.com/en/database/oracle/oracle-database/19/sutil/datapump-import-utility.html#GUID-1DB459BF-1FA2-4CA2-BB9D-2FE59C0B99F6
-            impdp "$user"@"$dbname" DIRECTORY="$dirname" DUMPFILE=export.dmp FULL=YES NOLOGFILE=YES
-            ;;
-        p|P|postgres|postgresql|Postgres|PostgreSQL)
-            db_dump_copy
-            docker exec dockerian psql -U postgres -f "$backup_path" # Help by DeepSeek
-            ;;
-        *)
-            echo "ERROR: Invalid argument."
-            exit 1
-            ;;
-    esac
-}
 
 service_restart()
 {
@@ -490,7 +509,7 @@ main()
 
     if [[ $is_web_server == true ]]
     then
-        web_server_setup "$web_server_type" "$website_files"
+        web_server_setup "$web_server_type"
         if [[ -n "$website_files" ]]
         then
             docker cp "$website_files" dockerian:"${webserver_file_paths[$web_server_type]}"
@@ -501,16 +520,14 @@ main()
     if [[ $is_db_server == true ]]
     then
         database_setup "$db_type"
-        if [[ -n "$db_backup" ]]
+        docker cp "$db_backup_file" dockerian:/
+        if [[ $db_type =~ /o|O|oracle|Oracle/ ]]
         then
-            if [[ $db_type =~ /(o|O|oracle|Oracle)/ ]]
-            then
-                load_database_backup "$db_type" "$db_backup_file" "$username" "$dbname"
-            else
-                load_database_backup "$db_type" "$db_backup_file"
-            fi
-            service_restart "$db_type"
+            load_database_backup "$db_type" "$db_backup_file" "$username"
+        else
+            load_database_backup "$db_type" "$db_backup_file"
         fi
+        service_restart "$db_type"
     fi
 
     if [[ $is_email_server == true ]]
@@ -631,10 +648,7 @@ then
 
     case $web_server in
         y|Y)
-            if [[ $restore_website_state =~ [yY] ]]
-            then web_server_setup "$web_server_type" "$website_files"
-            else web_server_setup "$web_server_type"
-            fi
+            web_server_setup "$web_server_type"
             ;;
         n|N|"")
             ;;
