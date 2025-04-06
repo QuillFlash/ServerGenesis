@@ -162,7 +162,7 @@ web_server_setup()
             docker exec -it dockerian service apache2 start
             ;;
         n|N|nginx|Nginx)
-            docker exec -it dockerian apt-get -y install nginx php
+            docker exec -it dockerian apt-get -y install nginx php php-fpm
             docker exec -it dockerian update-rc.d nginx defaults
             docker exec -it dockerian service nginx start
             ;;
@@ -210,7 +210,7 @@ database_setup()
             docker exec -it dockerian dpkg -i oracle-database-ee-*.deb
             ;;
         p|P|postgres|Postgres|postgresql|PostgreSQL)
-            docker exec -it dockerian apt-get -y install postgresql
+            docker exec -it dockerian apt-get -y install postgresql php php-pgsql
             docker exec -it dockerian update-rc.d postgresql defaults
             docker exec -it dockerian service postgresql start
             ;;
@@ -279,8 +279,9 @@ load_database_backup()
     local database_type="$1"
     local backup_path="$2"
     local user="$3"
-    local mongodb_name
-    mongodb_name="$(basename "$backup_path")"
+    local database_name="$4"
+    local container_backup_path
+    container_backup_path="$(basename "$backup_path")"
     case "$database_type" in
         mo|Mo|MO|mongodb|MongoDB)
             # Help to understand the sed syntax by Gemini 2.5 Pro
@@ -293,10 +294,14 @@ extension=mongodb
             docker exec -it dockerian bash -c "cd ${webserver_file_paths[$web_server_type]} || exit 1 \
             && composer require mongodb/mongodb"
             # Help by ChatGPT because I did not even realise the basename command exists, and it's genuinely useful!
-            docker exec mongodb mongorestore -d "$mongodb_name" "$mongodb_name"
+            docker exec mongodb mongorestore -d "$container_backup_path" "$container_backup_path"
             docker exec dockerian service apache2 restart
             ;;
         my|My|MY|mysql|MySQL)
+            if [[ $web_server_type =~ /a|A|apache|Apache/ ]]
+            then
+                docker exec dockerian sed -i 's/;extension=mysqli/extension=mysqli/' /etc/php/8.2/apache2/php.ini
+            fi
             if [[ -n "$mysql_creds" ]]
             then
                 docker cp "$mysql_creds" dockerian:/root/.my.cnf
@@ -308,10 +313,20 @@ extension=mongodb
         o|O|oracle|Oracle)
             # Help by Oracle Docs:
             # https://docs.oracle.com/en/database/oracle/oracle-database/19/sutil/datapump-import-utility.html#GUID-1DB459BF-1FA2-4CA2-BB9D-2FE59C0B99F6
-            impdp "$user"@"$dbname" DIRECTORY="$backup_path" DUMPFILE=export.dmp FULL=YES NOLOGFILE=YES
+            docker exec dockerian impdp "$user"@"$dbname" DIRECTORY="$backup_path" DUMPFILE=export.dmp FULL=YES NOLOGFILE=YES
             ;;
         p|P|postgres|postgresql|Postgres|PostgreSQL)
-            docker exec dockerian psql -U "$user" -f "$backup_path" # Help by DeepSeek
+            if [[ $web_server_type =~ /a|A|apache|Apache/ ]]
+            then
+                docker exec dockerian sed -i 's/;extension=pgsql/extension=pgsql/' /etc/php/8.2/apache2/php.ini
+                docker exec dockerian service apache2 restart
+            fi
+            # Help by CyberStems on StackOverflow:
+            # https://stackoverflow.com/questions/58773246/as-a-root-user-can-i-execute-commands-in-bash-as-another-user-without-requiring
+            docker exec dockerian su postgres -c 'psql -c "CREATE ROLE root WITH SUPERUSER LOGIN;"'
+            docker exec dockerian su postgres -c "psql -c 'CREATE DATABASE $database_name;'"
+            docker exec dockerian su postgres -c "psql $database_name < $container_backup_path" # Help by DeepSeek
+            docker exec dockerian su postgres -c "psql -c 'GRANT root TO $username;'"
             ;;
         *)
             echo "ERROR: Invalid argument."
@@ -503,6 +518,11 @@ Main arguments:
 
   -d, --db-server               Use your container as a database server
   -D, --db-type                 Type of your database server (mongodb, mysql, postgresql, oracle)
+  -p, --postgresql-db-name      Specify the name of the PostgreSQL database to import (needed if your specified
+                                database type is PostgreSQL and use the --db-backup argument alongside it)
+  -u, --username                Specify the username of the Oracle SQL or PostgreSQL user that interacts
+                                with the database in your web app (needed if your specified Oracle SQL or PostgreSQL)
+
   -e, --email-server            Use your container as an e-mail server
 
   -h, --help                    Display this exact help dialogue
@@ -590,6 +610,16 @@ do
             mysql_creds="$2"
             shift 2
             ;;
+        -p|--postgresql-db-name)
+            value_validation "$1" "$2"
+            dbname="$2"
+            shift 2
+            ;;
+        -u|--username)
+            value_validation "$1" "$2"
+            username="$2"
+            shift 2
+            ;;
         --website-files)
             value_validation "$1" "$2"
             website_files="$2"
@@ -667,7 +697,19 @@ check_dependencies()
 
     if [[ -n "$mongodb_port_number" && ! $db_type =~ /mo|Mo|MO|mongodb|MongoDB/ ]]
     then
-        echo "ERROR: This command can only be used alongside -d/--db-server." >&2
+        echo "ERROR: This command can only be used if your database type is set to MongoDB." >&2
+        exit 1
+    fi
+
+    if [[ -z $dbname && -n $db_backup_file && $db_type =~ /p|P|postgres|Postgres|postgresql|PostgreSQL/ ]]
+    then
+        echo "ERROR: This command must be used when the database type is PostgreSQL and --db-backup is specified." >&2
+        exit 1
+    fi
+
+    if [[ -z $username && -n $db_backup_file && $db_type =~ /p|P|postgres|Postgres|postgresql|PostgreSQL|o|O|oracle|Oracle/ ]]
+    then
+        echo "ERROR: This command must be used when the database type is either Oracle SQL or PostgreSQL and --db-backup is specified." >&2
         exit 1
     fi
 }
@@ -707,6 +749,9 @@ main()
         if [[ $db_type =~ /o|O|oracle|Oracle/ ]]
         then
             load_database_backup "$db_type" "$db_backup_file" "$username"
+        elif [[ $db_type =~ /p|P|postgres|Postgres|postgresql|PostgreSQL/ ]]
+        then
+            load_database_backup "$db_type" "$db_backup_file" "" "$dbname"
         else
             load_database_backup "$db_type" "$db_backup_file"
         fi
