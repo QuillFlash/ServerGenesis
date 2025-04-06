@@ -44,7 +44,7 @@ email_server_io_check=""
 
 # If the docker package is not present, install it on the popular distros
 # (Debian/Ubuntu, Fedora, RHEL, Arch Linux, Gentoo, Alpine)
-if [ ! -e /usr/bin/docker ]
+if [ ! -e /usr/bin/docker ] && [ ! -d /Applications ]
 then
     echo "Docker is not installed! Installing dependency of shell script..."
     sleep 2
@@ -92,20 +92,35 @@ then
         exit 1 # ChatGPT segítsége
     fi
 fi
+
 # Mac install
-if [ -d /Applications ] && [ ! -e /Applications/Docker.app ]
-then
-    echo "You are running macOS!"
-    echo "Homebrew is not installed, installing Mac-specific dependency..."
-    sleep 2
-    xcode-select --install
-    NONINTERACTIVE=1 sudo /bin/bash -c \
-    "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    echo "Installing Docker for Mac..."
-    brew install docker --force
-    open -a /Applications/Docker.app
-    sleep 2
-fi
+mac_install()
+{
+	if [ -d /Applications ] && [ ! -d /usr/local/Cellar/docker ] || [ ! -d /opt/homebrew/Cellar/docker ]
+	then
+	    echo "You are running macOS!"
+	    echo "Homebrew is not installed, installing Mac-specific dependency..."
+	    sleep 2
+	    xcode-select --install
+	    NONINTERACTIVE=1 sudo /bin/bash -c \
+	    "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+	    echo "Installing Docker for Mac..."
+	    brew install --cask docker
+	    open -a /Applications/Docker.app
+	    sleep 90
+	    # Help by Gemini 2.5 Pro to check for the running dockerd daemon
+	    local docker_daemon_check
+	    docker_daemon_check=$(docker ps > /dev/null 2>&1)
+	    if [[ ! $docker_daemon_check ]]
+	    then
+			echo "FATAL ERROR: You did not activate dockerd in the Docker Desktop settings!
+			Docker requires dockerd to function. The script is now going to exit."
+			exit 1
+	    fi
+	fi
+}
+
+mac_install
 
 # Source: https://stackoverflow.com/questions/18431285/check-if-a-user-is-in-a-group-in-bash, ChatGPT
 if [ "$(id -nG "$USER" | tr ' ' '\n' | grep -w 'docker')" != "docker" ] \
