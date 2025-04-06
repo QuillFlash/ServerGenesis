@@ -323,6 +323,8 @@ extension=mongodb
             fi
             # Help by CyberStems on StackOverflow:
             # https://stackoverflow.com/questions/58773246/as-a-root-user-can-i-execute-commands-in-bash-as-another-user-without-requiring
+            # And thanks to Yigit Ozdemir, the user in the data dump actually has the rights to display the DB content!
+            # https://openbasesystems.com/2023/06/20/postgresql-error-fatal-role-username-does-not-exist/
             docker exec dockerian su postgres -c 'psql -c "CREATE ROLE root WITH SUPERUSER LOGIN;"'
             docker exec dockerian su postgres -c "psql -c 'CREATE DATABASE $database_name;'"
             docker exec dockerian su postgres -c "psql $database_name < $container_backup_path" # Help by DeepSeek
