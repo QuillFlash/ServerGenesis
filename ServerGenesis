@@ -445,21 +445,15 @@ tui()
     case $ssh in
         y|Y)
             echo "Which port would you like SSH to listen on?"
-            ssh_port_number=$(read -r)
-            if [[ -z $ssh_port_number ]]
-            then
-                echo "ERROR: An exposed port is needed for SSH to function.
-                Please retry or skip this step entirely."
-                exit 1
-            fi
+            read -r ssh_port_number
             # jilles at StackOverflow.com: https://stackoverflow.com/a/3951175
-              case $ssh_port_number in
-                  *[!0-9]*) ;;
-                  *)
-                      echo "ERROR: A port number can only contain numbers (obviously)."
-                      exit 1
-                      ;;
-              esac
+            case "$ssh_port_number" in
+                ''|*[!0-9]*)
+                    echo "ERROR: A port number can only contain numbers (obviously)."
+                    exit 1
+                    ;;
+                *) ;;
+            esac
             echo "2.) Would you like to install a file server? (Y/N) ";\
             local file_server
             read -r file_server
@@ -467,7 +461,7 @@ tui()
             y|Y)
                 echo
                 echo "Please specify the name of the first SFTP account: "
-                sftp_username=$(read -r)
+                read -r sftp_username
                 ;;
             n|N)
                 ;;
@@ -495,7 +489,7 @@ tui()
             is_web_server=true
             echo
             echo "Choose your web server: [A]pache/[N]ginx/[O]penResty ";\
-            web_server_type=$(read -r)
+            read -r web_server_type
             case $web_server_type in
                 a|A|apache|Apache|n|N|nginx|Nginx|o|O|openresty|OpenResty)
                     ;;
@@ -506,13 +500,13 @@ tui()
             esac
             echo
             echo "Which port would you like the web server to listen on?"
-            web_server_port_number=$(read -r)
+            read -r web_server_port_number
             case $web_server_port_number in
-                *[!0-9]*) ;;
-                *)
+                ''|*[!0-9]*)
                     echo "ERROR: A port number can only contain numbers (obviously)."
                     exit 1
                     ;;
+                *) ;;
             esac
             echo
             echo "Would you like to import an existing website? (Y/N) ";\
@@ -522,7 +516,7 @@ tui()
                 y|Y)
                     echo
                     echo "Please type in the path to your website's files:";\
-                    website_files=$(read -r)
+                    read -r website_files
                     if [[ ! -e $website_files ]]
                     then
                         echo "ERROR: File not found! Exiting..."
@@ -555,7 +549,7 @@ tui()
             y|Y)
                 echo
                 echo "Choose your database management system (DBMS): [Mo]ngoDB/[My]SQL/[O]racle SQL (PL/SQL)/[P]ostgreSQL ";\
-                db_type=$(read -r)
+                read -r db_type
                 if [[ ! $db_type =~ /mo|Mo|MO|mongodb|MongoDB|my|My|MY|mysql|MySQL|o|O|oracle|Oracle|p|P|postgres|Postgres|postgresql|PostgreSQL/ ]]
                 then
                     echo "ERROR: Invalid input."
@@ -565,7 +559,7 @@ tui()
                 then
                     echo
                     echo "Enter the port number the MongoDB server is going to listen on: "
-                    mongodb_port_number="$(read -r)"
+                    read -r mongodb_port_number
                 fi
                 echo
                 echo "Would you like to import an existing database? (Y/N) ";\
@@ -582,7 +576,7 @@ tui()
                             echo
                         fi
                         echo "Please type in the path to your database's files:";\
-                        db_backup_file=$(read -r)
+                        read -r db_backup_file
                         if [[ "$db_type" =~ /o|O|oracle|Oracle|p|P|postgres|postgresql|Postgres|PostgreSQL/ ]]
                         then
                             echo "Enter the path where you Oracle database installer RPM resides in: "
