@@ -724,6 +724,7 @@ tui()
 
     echo "Congratulations! You've successfully configured a ready-to-use (and portable) Debian server for your needs."
     echo "Isn't it nice that I spent a lot of my time so that you'd have less headaches? :)"
+    exit
 }
 
 if [[ $# -eq 0 ]]
