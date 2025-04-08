@@ -189,9 +189,9 @@ web_server_setup()
             # (Thank you, Gemini 2.5 Pro for the operational config file!)
             if [[ -e $cmd ]]
             then
-                docker cp "$cmd"/nginx-conf/default.conf nginx:/etc/nginx/conf.d
+                docker cp "$cmd"/nginx-conf/default.conf dockerian:/etc/nginx/conf.d
             else
-                docker cp nginx-conf/default.conf nginx:/etc/nginx/conf.d
+                docker cp nginx-conf/default.conf dockerian:/etc/nginx/conf.d
             fi
             docker exec dockerian sed -i \
             's/listen = \/run\/php\/php8.2-fpm.sock/listen = 127.0.0.1:9000/' \
@@ -208,9 +208,9 @@ web_server_setup()
             docker exec dockerian bash -c "apt-get update && apt-get -y install php php-fpm"
             if [[ -e $cmd ]]
             then
-                docker cp "$cmd"/nginx-conf/default.conf nginx:/etc/nginx/conf.d
+                docker cp "$cmd"/nginx-conf/default.conf dockerian:/etc/nginx/conf.d
             else
-                docker cp nginx-conf/default.conf nginx:/etc/nginx/conf.d
+                docker cp nginx-conf/default.conf dockerian:/etc/nginx/conf.d
             fi
             docker exec dockerian sed -i \
             's/listen = \/run\/php\/php8.2-fpm.sock/listen = 127.0.0.1:9000/' \
@@ -888,12 +888,6 @@ if ! docker ps -a | grep -Eq 'dockerian'
 then
     create_main_container
 fi
-
-service_restart()
-{
-    local service_name="$1"
-    docker exec dockerian service "$service_name" restart
-}
 
 # This is mostly boilerplate, so I made the structure of it with DeepSeek
 check_dependencies()
