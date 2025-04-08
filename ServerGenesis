@@ -382,11 +382,11 @@ extension=mongodb
             if [[ $web_server_type =~ /a|A|apache|Apache/ ]]
             then
                 docker exec dockerian sed -i 's/;extension=mysqli/extension=mysqli/' /etc/php/8.2/apache2/php.ini
-                docker exec dockerian sed -i 's/;extension=pdo_msql/extension=pdo_mysql/' /etc/php/8.2/apache2/php.ini
+                docker exec dockerian sed -i 's/;extension=pdo_mysql/extension=pdo_mysql/' /etc/php/8.2/apache2/php.ini
                 docker exec dockerian service apache2 restart
             else
                 docker exec dockerian sed -i 's/;extension=mysqli/extension=mysqli/' /etc/php/8.2/fpm/php.ini
-                docker exec dockerian sed -i 's/;extension=pdo_msql/extension=pdo_mysql/' /etc/php/8.2/fpm/php.ini
+                docker exec dockerian sed -i 's/;extension=pdo_mysql/extension=pdo_mysql/' /etc/php/8.2/fpm/php.ini
                 docker exec dockerian service php8.2-fpm restart
             fi
             if [[ -n "$mysql_creds" ]]
@@ -398,6 +398,17 @@ extension=mongodb
             docker exec dockerian bash -c "mysql -u root -p < $backup_path"
             ;;
         o|O|oracle|Oracle)
+            if [[ $web_server_type =~ /a|A|apache|Apache/ ]]
+            then
+                docker exec dockerian sed -i 's/;extension=odbc/extension=odbc/' /etc/php/8.2/apache2/php.ini
+                docker exec dockerian sed -i 's/;extension=pdo_odbc/extension=pdo_odbc/' /etc/php/8.2/apache2/php.ini
+                docker exec dockerian service apache2 restart
+            else
+                docker exec dockerian sed -i 's/;extension=odbc/extension=odbc/' /etc/php/8.2/fpm/php.ini
+                docker exec dockerian sed -i 's/;extension=pdo_odbc/extension=pdo_odbc/' /etc/php/8.2/fpm/php.ini
+                docker exec dockerian service php8.2-fpm restart
+            fi
+            docker exec dockerian service odbc restart
             # Help by Oracle Docs:
             # https://docs.oracle.com/en/database/oracle/oracle-database/19/sutil/datapump-import-utility.html#GUID-1DB459BF-1FA2-4CA2-BB9D-2FE59C0B99F6
             docker exec dockerian impdp "$user"@"$database_name" DIRECTORY="$backup_path" DUMPFILE=export.dmp FULL=YES NOLOGFILE=YES
