@@ -1,6 +1,7 @@
 package com.theaestheticfur.ServerGenesis_GUI;
 import com.formdev.flatlaf.FlatDarkLaf;
 import com.theaestheticfur.ServerGenesis_GUI.ui.MainPanel;
+import com.theaestheticfur.ServerGenesis_GUI.ui_logic.CheckBoxHandler;
 import javax.swing.*;
 import java.awt.*;
 
@@ -34,21 +35,8 @@ public class Main
             mainPanel.getWebServerPortNumberTextField().setEnabled(false);
             mainPanel.getWebServerTypeComboBox().setEnabled(false);
             mainPanel.getDbTypeComboBox().setEnabled(false);
-            mainPanel.getSshCheckBox().addItemListener(e ->
-                    mainPanel.getSshPortNumberTextField()
-                             .setEnabled(mainPanel.getSshCheckBox().isSelected()));
-            mainPanel.getSftpCheckBox().addItemListener(e ->
-                    mainPanel.getSftpUsernameTextField()
-                             .setEnabled(mainPanel.getSftpCheckBox().isSelected()));
-            mainPanel.getWebServerCheckBox().addItemListener(e ->
-                    mainPanel.getWebServerTypeComboBox()
-                             .setEnabled(mainPanel.getWebServerCheckBox().isSelected()));
-            mainPanel.getWebServerCheckBox().addItemListener(e ->
-                    mainPanel.getWebServerPortNumberTextField()
-                             .setEnabled(mainPanel.getWebServerCheckBox().isSelected()));
-            mainPanel.getDbCheckBox().addItemListener(e ->
-                    mainPanel.getDbTypeComboBox()
-                             .setEnabled(mainPanel.getDbCheckBox().isSelected()));
+            CheckBoxHandler checkBoxHandler = new CheckBoxHandler();
+            checkBoxHandler.checkBoxLogic(mainPanel);
         });
     }
 }
